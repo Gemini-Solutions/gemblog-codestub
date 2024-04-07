@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: mutating
+  namespace: webhook
+spec:
+  ports:
+    - name: http
+      port: 443
+      targetPort: 443  # Your webhook server port
+  selector:
+    app: mutating-webhook  # Label of your webhook deployment
