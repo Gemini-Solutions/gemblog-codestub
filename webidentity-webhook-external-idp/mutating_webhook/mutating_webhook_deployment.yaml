@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mutating-webhook
+  namespace: webhook
+spec:
+  replicas: 1  # Adjust as needed
+  selector:
+    matchLabels:
+      app: mutating-webhook
+  template:
+    metadata:
+      labels:
+        app: mutating-webhook
+    spec:
+      containers:
+        - name: mutating-webhook
+          image: example.registry.com/mutating-webhook:1.0.0  # Replace with your Docker image name and tag
+          ports:
+            - containerPort: 443  # Port your Flask app is listening on
+      imagePullSecrets:
+        - name: somecreds  # Replace with the name of your ImagePullSecret

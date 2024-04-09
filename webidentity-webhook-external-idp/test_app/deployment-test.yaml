@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ubuntu-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ubuntu
+  template:
+    metadata:
+      labels:
+        app: ubuntu
+    spec:
+      containers:
+      - name: ubuntu-container
+        image: registry.example.com/webidentity-testapp:latest
+      imagePullSecrets:
+        - name: regcred  # Replace with the name of your ImagePullSecret
