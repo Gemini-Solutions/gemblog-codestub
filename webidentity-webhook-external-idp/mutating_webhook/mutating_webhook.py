@@ -9,7 +9,7 @@ app = Flask(__name__)
 
 web_identity_pod_spec = {
             "name": "webidentity-sidecar",
-            "image": "registry-np.geminisolutions.com/webidentity-sidecar:latest",
+            "image": "example.registry.com/webidentity-sidecar:latest",
             "env" : [
                 {
                     "name" : "CLIENT_ID",
