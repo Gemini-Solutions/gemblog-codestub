@@ -1,0 +1,237 @@
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  annotations:
+  name: ext-authz
+  namespace: test
+spec:
+  configPatches:
+  - applyTo: CLUSTER
+    match:
+      context: SIDECAR_OUTBOUND
+    patch:
+      operation: ADD
+      value:
+        connect_timeout: 10s
+        dns_lookup_family: V4_ONLY
+        lb_policy: ROUND_ROBIN
+        load_assignment:
+          cluster_name: ms_jwks_cluster
+          endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: login.microsoftonline.com
+                    port_value: 443
+        name: ms_jwks_cluster
+        transport_socket:
+          name: envoy.transport_sockets.tls
+          typed_config:
+            '@type': type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+            sni: login.microsoftonline.com
+        type: LOGICAL_DNS
+  - applyTo: CLUSTER
+    match:
+      context: SIDECAR_OUTBOUND
+    patch:
+      operation: ADD
+      value:
+        connect_timeout: 10s
+        dns_lookup_family: V4_ONLY
+        lb_policy: ROUND_ROBIN
+        load_assignment:
+          cluster_name: tm_jwks_cluster
+          endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: some-aws-api-gateway.ap-south-1.amazonaws.com
+                    port_value: 443
+        name: tm_jwks_cluster
+        transport_socket:
+          name: envoy.transport_sockets.tls
+          typed_config:
+            '@type': type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+            sni: some-aws-api-gateway.ap-south-1.amazonaws.com
+        type: LOGICAL_DNS
+  - applyTo: HTTP_FILTER
+    match:
+      context: SIDECAR_INBOUND
+      listener:
+        filterChain:
+          filter:
+            name: envoy.filters.network.http_connection_manager
+            subFilter:
+              name: envoy.filters.http.router
+    patch:
+      operation: INSERT_BEFORE
+      value:
+        name: envoy.filters.http.jwt_authn
+        typed_config:
+          '@type': type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication
+          bypass_cors_preflight: true
+          providers:
+            ms_jwt_auth:
+              forward: true
+              forward_payload_header: claim
+              from_headers:
+              - name: Authorization
+                value_prefix: 'Bearer '
+              payload_in_metadata: jwt_payload
+              remote_jwks:
+                http_uri:
+                  cluster: ms_jwks_cluster
+                  timeout: 1s
+                  uri: https://login.microsoftonline.com/<tenant-id>/discovery/v2.0/keys
+            tm_jwt_auth:
+              forward: true
+              forward_payload_header: claim
+              from_headers:
+              - name: Authorization
+                value_prefix: 'Bearer '
+              payload_in_metadata: jwt_payload
+              remote_jwks:
+                http_uri:
+                  cluster: tm_jwks_cluster
+                  timeout: 1s
+                  uri: some-aws-api-gateway.ap-south-1.amazonaws.com/your-service
+          rules:
+          - match:
+              safe_regex:
+                google_re2: {}
+                regex: .*path1.*
+          - match:
+              safe_regex:
+                google_re2: {}
+                regex: .*path2.*
+          - match:
+              safe_regex:
+                google_re2: {}
+                regex: .*path3.*
+          - match:
+              prefix: /some/more/path/1
+            requires:
+              provider_name: tm_jwt_auth
+          - match:
+              prefix: /some/more/path/2
+            requires:
+              provider_name: tm_jwt_auth
+          - match:
+              prefix: /some/more/path/3
+            requires:
+              provider_name: tm_jwt_auth
+          - match:
+              prefix: /
+            requires:
+              provider_name: ms_jwt_auth
+  - applyTo: HTTP_FILTER
+    match:
+      context: SIDECAR_INBOUND
+      listener:
+        filterChain:
+          filter:
+            name: envoy.filters.network.http_connection_manager
+            subFilter:
+              name: envoy.filters.http.router
+    patch:
+      operation: INSERT_BEFORE
+      value:
+        name: envoy.filters.http.lua
+        typed_config:
+          '@type': type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+          inline_code: |
+            function envoy_on_request(request_handle)
+              local meta = request_handle:streamInfo():dynamicMetadata()
+              for key, value in pairs(meta) do
+                request_handle:headers():add("Header-You-need", value.jwt_payload.unique_name or value.jwt_payload.preferred_username or value.jwt_payload.sub)
+              end
+            end
+  - applyTo: HTTP_FILTER
+    match:
+      context: SIDECAR_OUTBOUND
+      listener:
+        filterChain:
+          filter:
+            name: envoy.filters.network.http_connection_manager
+    patch:
+      operation: INSERT_BEFORE
+      value:
+        name: envoy.filters.http.lua
+        typed_config:
+          '@type': 'type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua'
+          inlineCode: |
+            function envoy_on_request(request_handle)
+              local host = request_handle:headers():get(":authority")
+              request_handle:logCritical("hostname is " .. host)
+              if host:match("path for which the token should be issued") then
+                if oauth2_token and oauth2_token_expiry and oauth2_token_expiry > os.time() then
+                  if count then
+                    count = count + 1
+                    request_handle:logCritical("using existing " .. tostring(count))
+                  end
+                  request_handle:headers():add("Authorization", "Bearer " .. oauth2_token)
+                else
+                  request_handle:logCritical("using new ONE")
+                  count = 0
+                  oauth2_token_expiry = os.time() + 2700 -- the expiry of the token for your IDP
+                  local request_headers = {
+                      [":method"] = "POST",
+                      [":authority"] = "authority",
+                      [":path"] = "the path to do client credentials flow",
+                      ["content-type"] = "application/x-www-form-urlencoded"
+                  }
+                  local payload = {
+                     grant_type = "client_credentials",
+                     client_id = "client-id",
+                     client_secret = "client-secret",
+                     scope = "some-scope"
+                  }
+                  local payload_query = ""
+                  for key, value in pairs(payload) do
+                    payload_query = payload_query .. key .. "=" .. value .. "&"
+                  end
+                  payload_query = string.sub(payload_query, 1, -2) -- Remove the trailing "&"
+                  -- the log level is critical set for istio envoy, you have to set while setting up the istio to enable other log levels
+                  -- request_handle:logCritical("The payload before"..payload_query)
+                  local response_headers, body = request_handle:httpCall(
+                    "ms_jwks_cluster",
+                    request_headers,
+                    payload_query,
+                    5000
+                  )
+                  if response_headers and body then
+                    local startIndex, endIndex = body:find('"access_token":"(.-)"')
+                    oauth2_token = body:sub(startIndex + 16, endIndex - 1)
+                  end
+                  request_handle:headers():add("Authorization", "Bearer " .. oauth2_token)
+                end
+              end
+            end
+  - applyTo: HTTP_FILTER
+    match:
+      context: SIDECAR_INBOUND
+      listener:
+        filterChain:
+          filter:
+            name: envoy.filters.network.http_connection_manager
+            subFilter:
+              name: envoy.filters.http.router
+    patch:
+      operation: INSERT_BEFORE
+      value:
+        name: envoy.ext_authz
+        typed_config:
+          '@type': type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+          grpc_service:
+            google_grpc:
+              stat_prefix: ext_authz
+              target_uri: 10.97.100.26:9191
+          status_on_error:
+            code: ServiceUnavailable
+          transport_api_version: V3
+          with_request_body:
+            allow_partial_message: true
+            max_request_bytes: 8192
+            pack_as_bytes: true
