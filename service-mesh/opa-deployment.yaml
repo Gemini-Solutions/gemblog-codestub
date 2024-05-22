@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opa
+  labels:
+    app: opa
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opa
+  template:
+    metadata:
+      labels:
+        app: opa
+      name: opa
+    spec:
+      containers:
+      - name: opa
+        image: openpolicyagent/opa:latest-istio
+        args:
+        - "run"
+        - "--server"
+        - "--log-level=debug"
+        - "--log-format=json-pretty"
+        - "--diagnostic-addr=0.0.0.0:8282"
+        - "--set=plugins.envoy_ext_authz_grpc.addr=:9191"
+        - "--set=plugins.envoy_ext_authz_grpc.path=/envoy/authz/result"
+        - "--set=decision_logs.console=true"
+        - "--ignore=.*"
+        - "/policies"
+        volumeMounts:
+        - readOnly: true
+          mountPath: /policies
+          name: opa-policy
+      volumes:
+      - name: opa-policy
+        configMap:
+          name: opa-policy
