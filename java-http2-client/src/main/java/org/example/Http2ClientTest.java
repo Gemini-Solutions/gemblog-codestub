@@ -32,9 +32,11 @@ public class Http2ClientTest {
         HttpClient client = createHttpClient();
         int count = 0;
         for (int i = 0; i < 10000; i++) {
+            int x = i%6;
             executorService.submit(() -> {
                 try {
-                    String api = apiMap.get(random.nextInt(6));
+                    String api = apiMap.get(x);
+                    // String api = apiMap.get(random.nextInt(6));
                     System.out.println("API for thread " + Thread.currentThread().getName() + " is " + api);
                         sendRequest(client, api);
 
